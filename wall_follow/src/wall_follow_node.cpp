@@ -4,6 +4,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
+#include "sensor_msgs/msg/joy.hpp"
 
 #include "diagnostics_msgs/msg/wall_following_diagnostics.hpp"
 
@@ -17,6 +18,9 @@ class WallFollow : public rclcpp::Node {
         scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
             "/scan", 1,
             std::bind(&WallFollow::scanCB, this, std::placeholders::_1));
+        autonomy_sub_ = this->create_subscription<sensor_msgs::msg::Joy>(
+            "/joy", 1,
+            std::bind(&WallFollow::autonomyCB, this, std::placeholders::_1));
 
         // Publishers
         drive_pub_ =
@@ -42,7 +46,7 @@ class WallFollow : public rclcpp::Node {
         look_ahead_ = this->get_parameter("look_ahead").as_double();
         this->declare_parameter("dist_from_wall", 1.0);
         dist_from_wall_ = this->get_parameter("dist_from_wall").as_double();
-        this->declare_parameter("follow_right", true);
+        this->declare_parameter("follow_right", false);
         follow_right_ = this->get_parameter("follow_right").as_bool();
     }
 
@@ -85,6 +89,7 @@ class WallFollow : public rclcpp::Node {
     double error = 0.0;
     double integral = 0.0;
     double derivative = 0.;
+    bool autonomy_enabled_ = false;
     diagnostics_msgs::msg::WallFollowingDiagnostics diag_msg;
 
     // Odom
@@ -105,11 +110,16 @@ class WallFollow : public rclcpp::Node {
     // ROS
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr autonomy_sub_;
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr
         drive_pub_;
     rclcpp::Publisher<diagnostics_msgs::msg::WallFollowingDiagnostics>::SharedPtr
         diag_pub_;
     rclcpp::TimerBase::SharedPtr param_timer_;
+
+    void autonomyCB(const sensor_msgs::msg::Joy::ConstSharedPtr msg) {
+        autonomy_enabled_ = msg->buttons[3];
+    }
 
     double get_range(std::vector<float> range_data, double& angle) {
         /*
@@ -162,8 +172,10 @@ class WallFollow : public rclcpp::Node {
         Returns:
             None
         */
-        if (ki_ > 0.) {
+        if (ki_ > 0. && autonomy_enabled_) {
             integral += error * dt_;
+        } else {
+            integral = 0.0;
         }
         derivative = (error - prev_error_) / dt_;
         double angle = kp_ * error + ki_ * integral + kd_ * derivative;
@@ -174,6 +186,7 @@ class WallFollow : public rclcpp::Node {
         drive_msg.drive.speed = velocity;
 
         drive_pub_->publish(drive_msg);
+        prev_error_ = error;
 
         // Diagnostics
         diag_msg.header.stamp = this->get_clock()->now();
